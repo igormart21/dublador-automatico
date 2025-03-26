@@ -1,22 +1,26 @@
 # Dublador de Vídeos
 
-Uma aplicação web para dublar vídeos de português para espanhol usando IA.
+Uma aplicação web para dublar vídeos usando IA, que transcreve o áudio, traduz e gera uma nova dublagem.
 
 ## Funcionalidades
 
-- Upload de vídeos
-- Transcrição automática usando Whisper
-- Tradução de português para espanhol
-- Geração de áudio em espanhol
-- Combinação de vídeo original com áudio traduzido
+- Upload de vídeos (MP4, AVI, MOV, MKV)
+- Transcrição automática do áudio usando Whisper
+- Tradução do texto usando mBART
+- Geração de áudio dublado usando TTS
+- Interface web responsiva e intuitiva
+- Barra de progresso em tempo real
+- Download automático do vídeo dublado
 
 ## Requisitos
 
-- Python 3.8+
+- Python 3.9+
 - FFmpeg
-- Dependências listadas em `requirements.txt`
+- Docker e Docker Compose (opcional)
 
-## Instalação Local
+## Instalação
+
+### Usando Docker (Recomendado)
 
 1. Clone o repositório:
 ```bash
@@ -24,12 +28,26 @@ git clone https://github.com/seu-usuario/dublador-videos.git
 cd dublador-videos
 ```
 
-2. Crie um ambiente virtual e ative-o:
+2. Inicie os containers:
+```bash
+docker-compose up --build
+```
+
+3. Acesse a aplicação em `http://localhost:8000`
+
+### Instalação Manual
+
+1. Clone o repositório:
+```bash
+git clone https://github.com/seu-usuario/dublador-videos.git
+cd dublador-videos
+```
+
+2. Crie um ambiente virtual:
 ```bash
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
-# ou
-.\venv\Scripts\activate  # Windows
+venv\Scripts\activate     # Windows
 ```
 
 3. Instale as dependências:
@@ -37,42 +55,60 @@ source venv/bin/activate  # Linux/Mac
 pip install -r requirements.txt
 ```
 
-4. Instale o FFmpeg:
-- Mac: `brew install ffmpeg`
-- Linux: `sudo apt-get install ffmpeg`
-- Windows: Baixe do site oficial e adicione ao PATH
-
-5. Execute a aplicação:
+4. Configure as variáveis de ambiente:
 ```bash
-uvicorn main:app --reload
+cp .env.example .env
+# Edite o arquivo .env com suas configurações
 ```
 
-A aplicação estará disponível em `http://localhost:8000`
+5. Inicie o servidor:
+```bash
+python main.py
+```
 
-## Deploy no Railway
-
-1. Crie uma conta no [Railway](https://railway.app/)
-2. Conecte seu repositório GitHub
-3. Crie um novo projeto no Railway
-4. Selecione o repositório
-5. Configure as variáveis de ambiente necessárias
-6. Deploy automático será iniciado
+6. Acesse a aplicação em `http://localhost:8000`
 
 ## Uso
 
 1. Acesse a interface web
-2. Faça upload de um vídeo em português
+2. Arraste e solte um vídeo ou clique para selecionar
 3. Aguarde o processamento
-4. Baixe o vídeo dublado em espanhol
+4. Faça o download do vídeo dublado
 
-## Tecnologias Utilizadas
+## Estrutura do Projeto
 
-- FastAPI
-- Whisper (OpenAI)
-- Transformers (Hugging Face)
-- TTS (Coqui)
-- FFmpeg
+```
+dublador-videos/
+├── main.py              # Servidor Flask
+├── requirements.txt     # Dependências Python
+├── Dockerfile          # Configuração do container
+├── docker-compose.yml  # Orquestração dos containers
+├── .env               # Variáveis de ambiente
+├── .gitignore        # Arquivos ignorados pelo git
+├── README.md         # Este arquivo
+├── static/           # Arquivos estáticos
+│   ├── styles.css    # Estilos CSS
+│   └── script.js     # JavaScript
+├── templates/        # Templates HTML
+│   └── index.html    # Página principal
+├── uploads/          # Diretório de uploads
+└── processed/        # Diretório de vídeos processados
+```
+
+## Contribuindo
+
+1. Faça um fork do projeto
+2. Crie uma branch para sua feature (`git checkout -b feature/AmazingFeature`)
+3. Commit suas mudanças (`git commit -m 'Add some AmazingFeature'`)
+4. Push para a branch (`git push origin feature/AmazingFeature`)
+5. Abra um Pull Request
 
 ## Licença
 
-MIT 
+Este projeto está licenciado sob a licença MIT - veja o arquivo [LICENSE](LICENSE) para detalhes.
+
+## Contato
+
+Seu Nome - [@seu_twitter](https://twitter.com/seu_twitter) - email@exemplo.com
+
+Link do Projeto: [https://github.com/seu-usuario/dublador-videos](https://github.com/seu-usuario/dublador-videos) 

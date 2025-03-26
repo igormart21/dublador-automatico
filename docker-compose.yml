@@ -6,15 +6,28 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - .:/app
-      - ./output:/app/output
-      - ./temp:/app/temp
+      - ./uploads:/app/uploads
+      - ./processed:/app/processed
     environment:
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      - redis
-      - celery
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+      - PORT=8000
+      - HOST=0.0.0.0
+      - UPLOAD_DIR=/app/uploads
+      - PROCESSED_DIR=/app/processed
+      - LOG_LEVEL=INFO
+      - WHISPER_MODEL=base
+      - TRANSLATION_MODEL=facebook/mbart-large-50-many-to-many-mmt
+      - TTS_MODEL=tts_models/es/css10/vits
+      - MAX_FILE_SIZE=100000000
+      - ALLOWED_VIDEO_TYPES=video/mp4,video/avi,video/mov,video/mkv
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '2'
+          memory: 4G
+    restart: unless-stopped
 
   celery:
     build: .

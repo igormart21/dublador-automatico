@@ -16,6 +16,14 @@ from fastapi.middleware.cors import CORSMiddleware
 import logging
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+import shutil
+import ffmpeg
+import tempfile
+from pydub import AudioSegment
+import numpy as np
+from moviepy.editor import VideoFileClip, AudioFileClip
+import json
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -30,14 +38,15 @@ class AppState:
             "translation_tokenizer": None,
             "tts": None,
             "loading_status": {
-                "whisper": "pending",
-                "translation": "pending",
-                "tts": "pending"
+                "whisper": "not_loaded",
+                "translation": "not_loaded",
+                "tts": "not_loaded"
             }
         }
+        self.tasks = {}
 
 app_state = AppState()
-app = FastAPI(title="Sistema de Dublagem Automática")
+app = FastAPI(title="Dublador de Vídeos")
 
 # Configuração de templates e arquivos estáticos
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -53,8 +62,8 @@ app.add_middleware(
 )
 
 # Criação dos diretórios necessários
-UPLOAD_DIR = Path("uploads")
-PROCESSED_DIR = Path("processed")
+UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "uploads"))
+PROCESSED_DIR = Path(os.getenv("PROCESSED_DIR", "processed"))
 UPLOAD_DIR.mkdir(exist_ok=True)
 PROCESSED_DIR.mkdir(exist_ok=True)
 
@@ -76,6 +85,7 @@ def load_whisper():
     except Exception as e:
         logger.error(f"Erro ao carregar modelo Whisper: {str(e)}")
         app_state.models["loading_status"]["whisper"] = "error"
+        raise
 
 def load_translation():
     try:
@@ -153,12 +163,13 @@ def load_translation():
 def load_tts():
     try:
         logger.info("Carregando modelo TTS...")
-        app_state.models["tts"] = TTS("tts_models/pt/cv/vits")
+        app_state.models["tts"] = TTS(model_name="tts_models/es/css10/vits")
         app_state.models["loading_status"]["tts"] = "loaded"
         logger.info("Modelo TTS carregado com sucesso!")
     except Exception as e:
         logger.error(f"Erro ao carregar modelo TTS: {str(e)}")
         app_state.models["loading_status"]["tts"] = "error"
+        raise
 
 async def load_models():
     """Carrega os modelos em threads separadas"""
@@ -214,50 +225,59 @@ async def root(request: Request):
         "loading_status": app_state.models["loading_status"]
     })
 
-@app.post("/upload-video/")
-async def upload_video(
-    video: UploadFile = File(...),
-    target_language: str = "es",
-    voice: str = "male"
-):
-    if not video.filename.endswith(('.mp4', '.avi', '.mov', '.mkv')):
-        raise HTTPException(status_code=400, detail="Formato de vídeo não suportado")
-    
-    # Gerar ID único para a tarefa
-    task_id = str(uuid.uuid4())
-    
-    # Salvar o vídeo
-    video_path = UPLOAD_DIR / f"{task_id}_{video.filename}"
-    async with aiofiles.open(video_path, 'wb') as out_file:
-        content = await video.read()
-        await out_file.write(content)
-    
-    # Registrar tarefa
-    tasks[task_id] = TaskStatus(
-        status="processing",
-        message="Iniciando processamento do vídeo...",
-        progress=0
-    )
-    
-    # Iniciar processamento em background
-    asyncio.create_task(process_video(task_id, video_path, target_language, voice))
-    
-    return {"task_id": task_id}
+@app.post("/upload/")
+async def upload_video(video: UploadFile = File(...)):
+    try:
+        # Verificar se os modelos estão carregados
+        if app_state.models["loading_status"]["whisper"] != "loaded":
+            raise HTTPException(status_code=503, detail="Modelo Whisper não está carregado")
+        if app_state.models["loading_status"]["translation"] != "loaded":
+            raise HTTPException(status_code=503, detail="Modelo de tradução não está carregado")
+        if app_state.models["loading_status"]["tts"] != "loaded":
+            raise HTTPException(status_code=503, detail="Modelo TTS não está carregado")
+            
+        # Gerar ID único para a tarefa
+        task_id = str(uuid.uuid4())
+        
+        # Criar diretório para o vídeo
+        video_dir = UPLOAD_DIR / task_id
+        video_dir.mkdir(exist_ok=True)
+        
+        # Salvar o vídeo
+        video_path = video_dir / video.filename
+        with open(video_path, "wb") as buffer:
+            shutil.copyfileobj(video.file, buffer)
+            
+        # Iniciar processamento em background
+        asyncio.create_task(process_video(task_id, video_path, "es", "female"))
+        
+        return {"task_id": task_id, "message": "Vídeo recebido e processamento iniciado"}
+        
+    except Exception as e:
+        logger.error(f"Erro no upload: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/task/{task_id}")
+@app.get("/status/{task_id}")
 async def get_task_status(task_id: str):
     """Verifica o status de uma tarefa"""
-    if task_id not in tasks:
+    if task_id not in app_state.tasks:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
-    return tasks[task_id]
+    return app_state.tasks[task_id]
 
-@app.get("/download/{filename}")
-async def download_video(filename: str):
+@app.get("/download/{task_id}")
+async def download_video(task_id: str):
     """Download do vídeo processado"""
-    file_path = PROCESSED_DIR / filename
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Arquivo não encontrado")
-    return FileResponse(str(file_path))
+    try:
+        # Verificar se o arquivo existe
+        file_path = PROCESSED_DIR / task_id / "output.mp4"
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="Vídeo não encontrado")
+            
+        return FileResponse(str(file_path))
+        
+    except Exception as e:
+        logger.error(f"Erro no download: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/test-translation/")
 async def test_translation(text: str):
@@ -397,49 +417,46 @@ async def test_full_process(text: str):
 
 async def process_video(task_id: str, video_path: Path, target_language: str, voice: str):
     try:
-        # Verificar se o arquivo existe
-        if not video_path.exists():
-            raise Exception("Arquivo de vídeo não encontrado")
-            
-        # Verificar se o arquivo tem tamanho maior que 0
-        if video_path.stat().st_size == 0:
-            raise Exception("Arquivo de vídeo está vazio")
-        
-        # Atualizar status
-        tasks[task_id].message = "Extraindo áudio do vídeo..."
-        tasks[task_id].progress = 10
+        # Inicializar status da tarefa
+        app_state.tasks[task_id] = {
+            "status": "processing",
+            "message": "Iniciando processamento...",
+            "progress": 0
+        }
         
         # Extrair áudio do vídeo
-        audio_path = UPLOAD_DIR / f"{task_id}_audio.wav"
-        result = os.system(f'ffmpeg -i "{video_path}" -vn -acodec pcm_s16le -ar 44100 -ac 2 "{audio_path}"')
+        app_state.tasks[task_id].message = "Extraindo áudio do vídeo..."
+        app_state.tasks[task_id].progress = 10
         
-        if result != 0:
-            raise Exception("Falha ao extrair áudio do vídeo")
+        try:
+            audio_path = video_path.parent / "audio.wav"
+            stream = ffmpeg.input(str(video_path))
+            stream = ffmpeg.output(stream, str(audio_path), acodec='pcm_s16le', ac=1, ar='16k')
+            ffmpeg.run(stream, overwrite_output=True, capture_stdout=True, capture_stderr=True)
             
-        if not audio_path.exists():
-            raise Exception("Arquivo de áudio não foi criado")
-            
-        if audio_path.stat().st_size == 0:
-            raise Exception("Arquivo de áudio está vazio")
+            if not audio_path.exists():
+                raise Exception("Falha ao extrair áudio do vídeo")
+                
+        except Exception as e:
+            raise Exception(f"Erro ao extrair áudio: {str(e)}")
         
         # Transcrever áudio
-        tasks[task_id].message = "Transcrevendo áudio..."
-        tasks[task_id].progress = 30
+        app_state.tasks[task_id].message = "Transcrevendo áudio..."
+        app_state.tasks[task_id].progress = 30
         
         try:
             result = app_state.models["whisper"].transcribe(str(audio_path))
-            if not result or "text" not in result:
-                raise Exception("Falha na transcrição do áudio")
             transcription = result["text"].strip()
             
             if not transcription:
-                raise Exception("Nenhum texto foi transcrito do áudio")
+                raise Exception("Transcrição vazia")
+                
         except Exception as e:
             raise Exception(f"Erro na transcrição: {str(e)}")
         
         # Traduzir texto
-        tasks[task_id].message = "Traduzindo texto..."
-        tasks[task_id].progress = 50
+        app_state.tasks[task_id].message = "Traduzindo texto..."
+        app_state.tasks[task_id].progress = 50
         
         try:
             # Verificar se o texto está vazio ou muito curto
@@ -511,69 +528,76 @@ async def process_video(task_id: str, video_path: Path, target_language: str, vo
         except Exception as e:
             raise Exception(f"Erro na tradução: {str(e)}")
         
-        # Gerar áudio
-        tasks[task_id].message = "Gerando áudio traduzido..."
-        tasks[task_id].progress = 70
+        # Gerar áudio traduzido
+        app_state.tasks[task_id].message = "Gerando áudio traduzido..."
+        app_state.tasks[task_id].progress = 70
         
         try:
-            output_path = PROCESSED_DIR / f"{task_id}_output.wav"
-            app_state.models["tts"].tts_to_file(text=translated_text, file_path=str(output_path))
+            translated_audio_path = video_path.parent / "translated_audio.wav"
+            app_state.models["tts"].tts_to_file(text=translated_text, file_path=str(translated_audio_path))
+            
+            if not translated_audio_path.exists():
+                raise Exception("Falha ao gerar áudio traduzido")
+                
+        except Exception as e:
+            raise Exception(f"Erro ao gerar áudio traduzido: {str(e)}")
+        
+        # Combinar vídeo com áudio traduzido
+        app_state.tasks[task_id].message = "Combinando vídeo com áudio traduzido..."
+        app_state.tasks[task_id].progress = 90
+        
+        try:
+            output_path = PROCESSED_DIR / task_id / "output.mp4"
+            output_path.parent.mkdir(exist_ok=True)
+            
+            # Carregar vídeo e áudio
+            video = VideoFileClip(str(video_path))
+            audio = AudioFileClip(str(translated_audio_path))
+            
+            # Combinar vídeo com áudio traduzido
+            final_video = video.set_audio(audio)
+            
+            # Salvar vídeo final
+            final_video.write_videofile(
+                str(output_path),
+                codec='libx264',
+                audio_codec='aac',
+                temp_audiofile=str(video_path.parent / "temp-audio.m4a"),
+                remove_temp=True
+            )
+            
+            # Fechar clips
+            video.close()
+            audio.close()
             
             if not output_path.exists():
-                raise Exception("Arquivo de áudio traduzido não foi criado")
+                raise Exception("Falha ao gerar vídeo final")
                 
-            if output_path.stat().st_size == 0:
-                raise Exception("Arquivo de áudio traduzido está vazio")
         except Exception as e:
-            raise Exception(f"Erro na geração do áudio: {str(e)}")
-        
-        # Combinar áudio com vídeo
-        tasks[task_id].message = "Finalizando vídeo..."
-        tasks[task_id].progress = 90
-        
-        try:
-            output_video_path = PROCESSED_DIR / f"{task_id}_final.mp4"
-            result = os.system(f'ffmpeg -i "{video_path}" -i "{output_path}" -c:v copy -c:a aac "{output_video_path}"')
-            
-            if result != 0:
-                raise Exception("Falha ao combinar áudio com vídeo")
-                
-            if not output_video_path.exists():
-                raise Exception("Arquivo de vídeo final não foi criado")
-                
-            if output_video_path.stat().st_size == 0:
-                raise Exception("Arquivo de vídeo final está vazio")
-        except Exception as e:
-            raise Exception(f"Erro na finalização do vídeo: {str(e)}")
+            raise Exception(f"Erro ao combinar vídeo com áudio: {str(e)}")
         
         # Limpar arquivos temporários
         try:
             if audio_path.exists():
                 os.remove(audio_path)
-            if output_path.exists():
-                os.remove(output_path)
+            if translated_audio_path.exists():
+                os.remove(translated_audio_path)
+            if video_path.exists():
+                os.remove(video_path)
+            shutil.rmtree(video_path.parent)
         except Exception as e:
             logger.warning(f"Erro ao limpar arquivos temporários: {str(e)}")
         
-        # Finalizar
-        tasks[task_id].status = "completed"
-        tasks[task_id].message = "Processamento concluído!"
-        tasks[task_id].progress = 100
-        tasks[task_id].download_url = f"/download/{task_id}_final.mp4"
+        # Atualizar status final
+        app_state.tasks[task_id].status = "completed"
+        app_state.tasks[task_id].message = "Processamento concluído!"
+        app_state.tasks[task_id].progress = 100
         
     except Exception as e:
-        tasks[task_id].status = "error"
-        tasks[task_id].message = f"Erro durante o processamento: {str(e)}"
-        logger.error(f"Erro no processamento da tarefa {task_id}: {str(e)}")
-        
-        # Limpar arquivos temporários em caso de erro
-        try:
-            if audio_path.exists():
-                os.remove(audio_path)
-            if output_path.exists():
-                os.remove(output_path)
-        except:
-            pass
+        logger.error(f"Erro no processamento do vídeo: {str(e)}")
+        app_state.tasks[task_id].status = "error"
+        app_state.tasks[task_id].message = f"Erro: {str(e)}"
+        app_state.tasks[task_id].progress = 0
 
 if __name__ == "__main__":
     import uvicorn
