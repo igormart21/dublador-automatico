@@ -1,34 +1,35 @@
-FROM python:3.9-slim
+# Use uma imagem base com Python 3.11
+FROM python:3.11-slim
 
-# Instala dependências do sistema
+# Instala FFmpeg e outras dependências do sistema
 RUN apt-get update && apt-get install -y \
     ffmpeg \
-    libsndfile1 \
-    git \
-    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Configura diretório de trabalho
+# Define o diretório de trabalho
 WORKDIR /app
 
-# Copia arquivos de dependências
+# Copia os arquivos de requisitos primeiro
 COPY requirements.txt .
 
-# Instala dependências Python
+# Instala as dependências Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copia o código
+# Copia o resto do código
 COPY . .
 
 # Cria diretórios necessários
-RUN mkdir -p temp output voices
+RUN mkdir -p /data/uploads /data/processed
+
+# Define variáveis de ambiente
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8000
+ENV UPLOAD_DIR=/data/uploads
+ENV PROCESSED_DIR=/data/processed
+ENV FFMPEG_PATH=/usr/bin/ffmpeg
 
 # Expõe a porta
 EXPOSE 8000
 
-# Define variáveis de ambiente
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
-
-# Comando padrão
+# Comando para iniciar a aplicação
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"] 
