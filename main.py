@@ -24,9 +24,19 @@ from pydub import AudioSegment
 import numpy as np
 from moviepy.editor import VideoFileClip, AudioFileClip
 import json
+from flask import Flask, request, jsonify, render_template, send_file
+from dotenv import load_dotenv
+from celery import Celery
+import redis
+
+# Carregar variáveis de ambiente
+load_dotenv()
 
 # Configurar logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=os.getenv('LOG_LEVEL', 'INFO'),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 class AppState:
@@ -75,6 +85,22 @@ class TaskStatus(BaseModel):
 
 # Dicionário para armazenar o status das tarefas
 tasks = {}
+
+# Configuração do Celery
+redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+celery = Celery('tasks', broker=redis_url)
+celery.conf.update(
+    result_backend=redis_url,
+    task_serializer='json',
+    accept_content=['json'],
+    result_serializer='json',
+    timezone='UTC',
+    enable_utc=True,
+)
+
+# Configurações
+MAX_FILE_SIZE = int(os.getenv('MAX_FILE_SIZE', 100000000))  # 100MB
+ALLOWED_VIDEO_TYPES = os.getenv('ALLOWED_VIDEO_TYPES', 'video/mp4,video/avi,video/mov,video/mkv').split(',')
 
 def load_whisper():
     try:
@@ -415,18 +441,18 @@ async def test_full_process(text: str):
         logger.error(f"Erro no teste completo: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-async def process_video(task_id: str, video_path: Path, target_language: str, voice: str):
+@celery.task(bind=True)
+def process_video(self, task_id: str, video_path: Path, target_language: str, voice: str):
     try:
-        # Inicializar status da tarefa
-        app_state.tasks[task_id] = {
-            "status": "processing",
-            "message": "Iniciando processamento...",
-            "progress": 0
-        }
+        # Atualizar status
+        self.update_state(state='PROCESSING', meta={'progress': 10, 'message': 'Iniciando processamento...'})
         
         # Extrair áudio do vídeo
-        app_state.tasks[task_id].message = "Extraindo áudio do vídeo..."
-        app_state.tasks[task_id].progress = 10
+        app_state.tasks[task_id] = {
+            "status": "processing",
+            "message": "Extraindo áudio do vídeo...",
+            "progress": 10
+        }
         
         try:
             audio_path = video_path.parent / "audio.wav"
